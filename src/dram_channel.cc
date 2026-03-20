@@ -8,8 +8,6 @@
 #include <cmath>
 #include <iostream>
 
-//adding changes here for BARBS
-
 DRAM_CHANNEL::request_type::request_type(const typename champsim::channel::request_type& req)
     : pf_metadata(req.pf_metadata), address(req.address), v_address(req.address), data(req.data), instr_depend_on_me(req.instr_depend_on_me),
     batch_id(req.batch_id), priority_score(req.priority_score),
@@ -49,6 +47,65 @@ DRAM_CHANNEL::DRAM_CHANNEL(
 #if defined(DRAM_ENABLE_LOGGER)
     logger = std::ofstream("dram_channel." + std::to_string(channel_id) + ".log");
 #endif
+}
+
+//adding changes here for BARBS
+
+void DRAM_CHANNEL::update_scoreboard_increment(size_t bank_idx, size_t bank_group_idx) {
+    //increment each one - some write req got dispatched here so
+    global_scoreboard.bank_counters[bank_idx]++;
+    global_scoreboard.bank_group_counters[bank_group_idx]++;
+}
+
+void DRAM_CHANNEL::update_scoreboard_decrement(size_t bank_idx, size_t bank_group_idx) {
+    //same as above but decrement (write req completed)
+    global_scoreboard.bank_counters[bank_idx]--;
+    global_scoreboard.bank_group_counters[bank_group_idx]--;
+}
+
+uint32_t DRAM_CHANNEL::calc_priority_score(const request_type& req) {
+    //calc priority based on req - we shud tune this to best avoid 24x then 6x penalties
+
+    // bool scheduled = false;
+    // bool forward_checked = false;
+
+    // uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
+
+    // uint32_t pf_metadata = 0;
+
+    // champsim::address address{};
+    // champsim::address v_address{};
+    // champsim::address data{};
+    // champsim::chrono::clock::time_point ready_time = champsim::chrono::clock::time_point::max();
+    // champsim::chrono::clock::time_point install_time{};
+
+    // std::vector<uint64_t> instr_depend_on_me{};
+    // std::vector<std::deque<response_type>*> to_return{};
+
+    // //here adding the pscore n batch_id
+    // uint32_t batch_id;
+    // uint32_t priority_score;
+
+    champsim::address curr_addr = req.address; //use physical address
+    size_t channel = address_mapper.channel(curr_addr);
+    size_t bankgroup = address_mapper.bankgroup(curr_addr);
+    size_t bank = address_mapper.bank_idx(curr_addr);
+    size_t row = address_mapper.row(curr_addr);
+
+    //get curr info from scoreboard
+    uint32_t curr_bankgroup_busy = global_scoreboard.bank_group_counters[bankgroup];
+    uint32_t curr_bank_busy = global_scoreboard.bank_counters[bank];
+
+    //now give pscore (naively for now but we can tune multipliers)
+    //same bankgroup = 6x
+    //same bank = 24x
+    //also factor in write queue depth for this bank (not that much prio tho like 0.4 now ig)
+    //should prolly normalize this to a score of 1 or something
+    //a low priority score is good
+
+    uint64_t pscore = (6 * bankgroup + 24 * bank) + (0.4) * barbs_write_queue[bank].size();
+
+    return pscore;
 }
 
 DRAM_CHANNEL::cmd_output_type

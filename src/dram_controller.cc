@@ -177,6 +177,10 @@ MEMORY_CONTROLLER::add_wq(const request_type& packet)
 {
     auto& channel = channels[address_mapper.channel(packet.address)];
 
+    //BARBS change here - the wq is per bank now and also stamp with the curr_batch_id for age batching
+
+    size_t bank_idx = address_mapper.bank_idx(packet.address);
+
     // search for the empty index
     auto wq_it = std::find_if_not(std::begin(channel->WQ), std::end(channel->WQ), [](const auto& pkt) { return pkt.has_value(); });
     if (wq_it != std::end(channel->WQ))
@@ -189,6 +193,12 @@ MEMORY_CONTROLLER::add_wq(const request_type& packet)
         wq_it->value().install_time = current_time;
 
         ++channel->sim_stats.write_requests;
+
+        //just set it here for now idk if thats enough tho
+        //set the req batch id too
+        packet.batch_id = channel.curr_batch_id;
+        barbs_write_queue[bank_idx] = packet;
+
         return true;
     }
 

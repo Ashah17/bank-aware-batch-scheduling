@@ -52,8 +52,8 @@ struct DRAM_BANK_STATE
 //adding scoreboard struct
 struct scoreboard {
     //keep scoreboard for bank n bank group granularity
-    std::vector<uint32> bank_group_counters;
-    std::vector<uint32> bank_counters;
+    std::vector<uint32_t> bank_group_counters;
+    std::vector<uint32_t> bank_counters;
 
     //constructor - init with the num bank groups n banks as params
     scoreboard(size_t num_bank_groups, size_t num_banks) : bank_group_counters(num_bank_groups, 0), bank_counters(num_banks, 0) {
@@ -161,14 +161,14 @@ public:
     //write 
 
     std::vector<std::vector<request_type>> barbs_write_queue; //per bank so vec of vecs
-    scoreboard bank_scoreboard; //scoreboard
+    scoreboard global_scoreboard; //scoreboard
     uint64_t curr_batch_id; //reqs get batched w this id
     size_t batch_size_limit;
 
     //fill in methods in .cc file
-    uint64_t calc_pscore(const request_type& req); //pscore calc
-    void update_scoreboard_first(size_t bank_idx, size_t bank_group_idx);
-    void update_scoreboard_second(size_t bank_idx, size_t bank_group_idx);
+    uint64_t calc_priority_score(const request_type& req); //pscore calc
+    void update_scoreboard_increment(size_t bank_idx, size_t bank_group_idx);
+    void update_scoreboard_decrement(size_t bank_idx, size_t bank_group_idx);
 
 private:
     bool do_autopre(const DRAM_COMMAND&);
