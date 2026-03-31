@@ -56,10 +56,11 @@ struct scoreboard {
     std::vector<uint32_t> bank_counters;
 
     //constructor - init with the num bank groups n banks as params
+    scoreboard() = default;
     scoreboard(size_t num_bank_groups, size_t num_banks) : bank_group_counters(num_bank_groups, 0), bank_counters(num_banks, 0) {
         //can leave empty
     }
-}
+};
 
 
 struct DRAM_CHANNEL final : public champsim::operable
@@ -84,8 +85,8 @@ struct DRAM_CHANNEL final : public champsim::operable
         std::vector<std::deque<response_type>*> to_return{};
 
         //here adding the pscore n batch_id
-        uint32_t batch_id;
-        uint32_t priority_score;
+        uint32_t batch_id = 0;
+        uint32_t priority_score = 0;
 
         explicit request_type(const typename champsim::channel::request_type& req);
     };
@@ -125,7 +126,7 @@ private:
     DRAM_ADDRESS_MAPPER address_mapper;
     DRAM_TIMING         dram_timing;
 
-    bool write_drain_started_with_no_read_occu;
+    bool write_drain_started_with_no_read_occu = false;
     size_t writes_during_drain =0;
     std::vector<size_t> writes_per_bankgroup;
     std::vector<size_t> writes_per_bank;
@@ -160,13 +161,15 @@ public:
     //init the new stuff here - write queue (of reqs), scoreboard
     //write 
 
-    std::vector<std::vector<request_type>> barbs_write_queue; //per bank so vec of vecs
+    std::vector<std::vector<size_t>> barbs_write_queue; // per bank list of WQ slots
     scoreboard global_scoreboard; //scoreboard
-    uint64_t curr_batch_id; //reqs get batched w this id
-    size_t batch_size_limit;
+    uint64_t curr_batch_id = 0; //reqs get batched w this id
+    size_t batch_size_limit = 1;
+    size_t curr_batch_fill = 0;
 
     //fill in methods in .cc file
-    uint64_t calc_priority_score(const request_type& req); //pscore calc
+    uint32_t calc_priority_score(const request_type& req); //pscore calc
+    void rebuild_barbs_write_queue();
     void update_scoreboard_increment(size_t bank_idx, size_t bank_group_idx);
     void update_scoreboard_decrement(size_t bank_idx, size_t bank_group_idx);
 

@@ -10,9 +10,8 @@
 
 DRAM_CHANNEL::request_type::request_type(const typename champsim::channel::request_type& req)
     : pf_metadata(req.pf_metadata), address(req.address), v_address(req.address), data(req.data), instr_depend_on_me(req.instr_depend_on_me),
-    batch_id(req.batch_id), priority_score(req.priority_score),
+      batch_id(0), priority_score(0)
 {
-    //added the priority score n batch num
   asid[0] = req.asid[0];
   asid[1] = req.asid[1];
 }
@@ -41,6 +40,9 @@ DRAM_CHANNEL::DRAM_CHANNEL(
     channel_id(_channel_id),
     address_mapper(am),
     dram_timing(timing),
+    barbs_write_queue(_num_bankgroups*_num_banks),
+    global_scoreboard(_num_bankgroups, _num_banks),
+    batch_size_limit(std::max<std::size_t>(1, wq_size/8)),
     writes_per_bank(_num_bankgroups*_num_banks, 0),
     writes_per_bankgroup(_num_bankgroups, 0)
 {
@@ -59,53 +61,44 @@ void DRAM_CHANNEL::update_scoreboard_increment(size_t bank_idx, size_t bank_grou
 
 void DRAM_CHANNEL::update_scoreboard_decrement(size_t bank_idx, size_t bank_group_idx) {
     //same as above but decrement (write req completed)
-    global_scoreboard.bank_counters[bank_idx]--;
-    global_scoreboard.bank_group_counters[bank_group_idx]--;
+    if (global_scoreboard.bank_counters[bank_idx] > 0)
+        global_scoreboard.bank_counters[bank_idx]--;
+    if (global_scoreboard.bank_group_counters[bank_group_idx] > 0)
+        global_scoreboard.bank_group_counters[bank_group_idx]--;
 }
 
-uint32_t DRAM_CHANNEL::calc_priority_score(const request_type& req) {
-    //calc priority based on req - we shud tune this to best avoid 24x then 6x penalties
+uint32_t DRAM_CHANNEL::calc_priority_score(const request_type& req)
+{
+    const size_t bankgroup = address_mapper.bankgroup(req.address);
+    const size_t bank = address_mapper.bank_idx(req.address);
 
-    // bool scheduled = false;
-    // bool forward_checked = false;
+    const uint32_t curr_bankgroup_busy = global_scoreboard.bank_group_counters[bankgroup];
+    const uint32_t curr_bank_busy = global_scoreboard.bank_counters[bank];
+    const uint32_t bank_queue_depth = static_cast<uint32_t>(barbs_write_queue[bank].size());
 
-    // uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
+    constexpr uint32_t bank_conflict_weight = 24;
+    constexpr uint32_t bankgroup_conflict_weight = 6;
+    constexpr uint32_t queue_depth_weight = 1;
+    return bank_conflict_weight*curr_bank_busy + bankgroup_conflict_weight*curr_bankgroup_busy + queue_depth_weight*bank_queue_depth;
+}
 
-    // uint32_t pf_metadata = 0;
+void DRAM_CHANNEL::rebuild_barbs_write_queue()
+{
+    for (auto& q : barbs_write_queue)
+        q.clear();
 
-    // champsim::address address{};
-    // champsim::address v_address{};
-    // champsim::address data{};
-    // champsim::chrono::clock::time_point ready_time = champsim::chrono::clock::time_point::max();
-    // champsim::chrono::clock::time_point install_time{};
+    for (size_t idx = 0; idx < WQ.size(); idx++)
+    {
+        if (!WQ[idx].has_value())
+            continue;
 
-    // std::vector<uint64_t> instr_depend_on_me{};
-    // std::vector<std::deque<response_type>*> to_return{};
+        auto& req = WQ[idx].value();
+        if (req.scheduled)
+            continue;
 
-    // //here adding the pscore n batch_id
-    // uint32_t batch_id;
-    // uint32_t priority_score;
-
-    champsim::address curr_addr = req.address; //use physical address
-    size_t channel = address_mapper.channel(curr_addr);
-    size_t bankgroup = address_mapper.bankgroup(curr_addr);
-    size_t bank = address_mapper.bank_idx(curr_addr);
-    size_t row = address_mapper.row(curr_addr);
-
-    //get curr info from scoreboard
-    uint32_t curr_bankgroup_busy = global_scoreboard.bank_group_counters[bankgroup];
-    uint32_t curr_bank_busy = global_scoreboard.bank_counters[bank];
-
-    //now give pscore (naively for now but we can tune multipliers)
-    //same bankgroup = 6x
-    //same bank = 24x
-    //also factor in write queue depth for this bank (not that much prio tho like 0.4 now ig)
-    //should prolly normalize this to a score of 1 or something
-    //a low priority score is good
-
-    uint64_t pscore = (6 * bankgroup + 24 * bank) + (0.4) * barbs_write_queue[bank].size();
-
-    return pscore;
+        size_t bank = address_mapper.bank_idx(req.address);
+        barbs_write_queue[bank].push_back(idx);
+    }
 }
 
 DRAM_CHANNEL::cmd_output_type
@@ -140,6 +133,15 @@ DRAM_CHANNEL::find_ready_request()
 
     // If nothing could be done, schedule reads and writes:
     auto& q = write_mode ? WQ : RQ;
+    if (write_mode)
+    {
+        rebuild_barbs_write_queue();
+        for (auto& e : WQ)
+        {
+            if (e.has_value() && !e->scheduled)
+                e->priority_score = calc_priority_score(e.value());
+        }
+    }
 
     std::vector<bool> banks_with_row_hits(num_bankgroups*num_banks, false);
     for (auto it = q.begin(); it != q.end(); it++)
@@ -196,8 +198,27 @@ DRAM_CHANNEL::find_ready_request()
             ready_cmd.type = DRAM_COMMAND::TYPE::ACTIVATE;
         }
 
-        if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID &&
-            (out.first.type == DRAM_COMMAND::TYPE::INVALID || req.ready_time < out.second->value().ready_time))
+        bool take_candidate = false;
+        if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID && out.first.type == DRAM_COMMAND::TYPE::INVALID)
+        {
+            take_candidate = true;
+        }
+        else if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID)
+        {
+            const auto& best = out.second->value();
+            if (write_mode)
+            {
+                take_candidate = (req.priority_score < best.priority_score)
+                                 || (req.priority_score == best.priority_score && req.batch_id < best.batch_id)
+                                 || (req.priority_score == best.priority_score && req.batch_id == best.batch_id && req.ready_time < best.ready_time);
+            }
+            else
+            {
+                take_candidate = req.ready_time < best.ready_time;
+            }
+        }
+
+        if (take_candidate)
         {
             if (ready_cmd.type == DRAM_COMMAND::TYPE::READ || ready_cmd.type == DRAM_COMMAND::TYPE::WRITE)
                 ready_cmd.autopre = do_autopre(ready_cmd);
@@ -283,6 +304,7 @@ DRAM_CHANNEL::schedule_ready_request()
             ++sim_stats.writes;
             sim_stats.write_row_hits += b.state.next_cas_is_row_hit;
             ++writes_during_drain;
+            update_scoreboard_increment(b_idx, bg);
 
             ++writes_per_bankgroup[bg];
             ++writes_per_bank[b_idx];
@@ -440,7 +462,12 @@ DRAM_CHANNEL::complete_requests()
             continue;
 
         if (it->value().scheduled && current_time >= it->value().ready_time)
+        {
+            const auto bank = address_mapper.bank_idx(it->value().address);
+            const auto bankgroup = address_mapper.bankgroup(it->value().address);
+            update_scoreboard_decrement(bank, bankgroup);
             it->reset();
+        }
     }
 
     for (auto it = RQ.begin(); it != RQ.end(); it++)
@@ -710,4 +737,5 @@ DRAM_CHANNEL::do_autopre(const DRAM_COMMAND& cmd)
         else
             return true;
     }
+    return false;
 }
