@@ -151,6 +151,13 @@ std::vector<std::string> champsim::plain_printer::format(DRAM_CHANNEL::stats_typ
 
   lines.push_back(fmt::format("  TIME IN WRITE MODE: {:10}", stats.tot_time_in_write_mode));
 
+  //adding for BARBS
+
+  lines.push_back(fmt::format("  WRITE 1x penalty count: {:10}\t6x penalty count: {:10}\t24x penalty count: {:10}", 
+                            stats.penalty_one, 
+                            stats.penalty_six, 
+                            stats.penalty_twentyfour));
+
   return lines;
 }
 

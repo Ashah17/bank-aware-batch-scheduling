@@ -44,7 +44,9 @@ DRAM_CHANNEL::DRAM_CHANNEL(
     global_scoreboard(_num_bankgroups, _num_bankgroups * _num_banks),
     batch_size_limit(std::max<std::size_t>(1, wq_size/8)),
     writes_per_bank(_num_bankgroups*_num_banks, 0),
-    writes_per_bankgroup(_num_bankgroups, 0)
+    writes_per_bankgroup(_num_bankgroups, 0),
+    last_scheduled_bankgroup(-1),
+    last_scheduled_bank(-1)
 {
 #if defined(DRAM_ENABLE_LOGGER)
     logger = std::ofstream("dram_channel." + std::to_string(channel_id) + ".log");
@@ -278,6 +280,27 @@ DRAM_CHANNEL::schedule_ready_request()
     size_t b_idx = address_mapper.bank_idx(cmd.address);
     size_t bg = address_mapper.bankgroup(cmd.address);
     auto& b = banks[b_idx];
+
+    //adding this for BARBS stats
+    if (b_idx == last_scheduled_bank) {
+        //compare the curr commands row to the open row in bank
+        if (address_mapper.row(cmd.address) != b.state.open_row) {
+            //24x
+            sim_stats.penalty_twentyfour++;
+        } else {
+            //same bank but row hit or na either way is 6x
+            sim_stats.penalty_six++;
+        }
+    } else if (bg == last_scheduled_bankgroup) {
+        //dif bank same bg = 6x
+        sim_stats.penalty_six++; 
+    } else {
+        //dif bankgrup = 1x
+        sim_stats.penalty_one++; 
+    }
+
+    last_scheduled_bank = b_idx;
+    last_scheduled_bankgroup = bg;
 
     auto update = [this] (champsim::chrono::clock::time_point& t, champsim::chrono::clock::duration delta)
     {

@@ -167,6 +167,10 @@ public:
     size_t batch_size_limit = 1;
     size_t curr_batch_fill = 0;
 
+    size_t last_scheduled_bankgroup = -1; //can init both of these to -1 for start
+    size_t last_scheduled_bank = -1; 
+
+
     //fill in methods in .cc file
     uint32_t calc_priority_score(const request_type& req); //pscore calc
     void rebuild_barbs_write_queue();

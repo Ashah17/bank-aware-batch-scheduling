@@ -40,6 +40,12 @@ struct dram_stats
 
     uint64_t rq_full =0;
     uint64_t wq_full =0;
+
+    //adding more stats here for BARBS
+
+    uint64_t penalty_one = 0; //dif bank group
+    uint64_t penalty_six = 0; //same bank group
+    uint64_t penalty_twentyfour = 0; //same bank, dif row
 };
 
 dram_stats operator-(dram_stats lhs, dram_stats rhs);
