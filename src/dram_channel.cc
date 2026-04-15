@@ -40,8 +40,8 @@ DRAM_CHANNEL::DRAM_CHANNEL(
     channel_id(_channel_id),
     address_mapper(am),
     dram_timing(timing),
-    barbs_write_queue(_num_bankgroups*_num_banks),
-    global_scoreboard(_num_bankgroups, _num_banks),
+    barbs_write_queue(_num_bankgroups * _num_banks),
+    global_scoreboard(_num_bankgroups, _num_bankgroups * _num_banks),
     batch_size_limit(std::max<std::size_t>(1, wq_size/8)),
     writes_per_bank(_num_bankgroups*_num_banks, 0),
     writes_per_bankgroup(_num_bankgroups, 0)
