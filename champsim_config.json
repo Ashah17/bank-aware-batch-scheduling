@@ -143,12 +143,12 @@
 
     "LLC": {
         "frequency": 4000,
-        "sets": 2048,
+        "sets": 16384,
         "ways": 16,
         "rq_size": 32,
         "wq_size": 32,
         "pq_size": 32,
-        "mshr_size": 64,
+        "mshr_size": 128,
         "latency": 20,
         "max_tag_check": 1,
         "max_fill": 1,
@@ -160,7 +160,7 @@
     },
 
     "physical_memory": {
-        "data_rate": 3200,
+        "data_rate": 4800,
         "channels": 1,
         "ranks": 1,
         "bankgroups": 8,
@@ -168,12 +168,12 @@
         "bank_rows": 65536,
         "bank_columns": 1024,
         "channel_width": 8,
-        "wq_size": 64,
+        "wq_size": 48,
         "rq_size": 64,
-        "tCAS":  24,
-        "tRCD": 24,
-        "tRP": 24,
-        "tRAS": 52,
+        "tCAS":  40,
+        "tRCD": 39,
+        "tRP": 39,
+        "tRAS": 77,
         "refresh_period": 32,
         "refreshes_per_period": 8192
     },
