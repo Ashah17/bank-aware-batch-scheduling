@@ -281,27 +281,6 @@ DRAM_CHANNEL::schedule_ready_request()
     size_t bg = address_mapper.bankgroup(cmd.address);
     auto& b = banks[b_idx];
 
-    //adding this for BARBS stats
-    if (b_idx == last_scheduled_bank) {
-        //compare the curr commands row to the open row in bank
-        if (address_mapper.row(cmd.address) != b.state.open_row) {
-            //24x
-            sim_stats.penalty_twentyfour++;
-        } else {
-            //same bank but row hit or na either way is 6x
-            sim_stats.penalty_six++;
-        }
-    } else if (bg == last_scheduled_bankgroup) {
-        //dif bank same bg = 6x
-        sim_stats.penalty_six++; 
-    } else {
-        //dif bankgrup = 1x
-        sim_stats.penalty_one++; 
-    }
-
-    last_scheduled_bank = b_idx;
-    last_scheduled_bankgroup = bg;
-
     auto update = [this] (champsim::chrono::clock::time_point& t, champsim::chrono::clock::duration delta)
     {
         t = std::max(t, this->current_time + delta);
@@ -331,6 +310,32 @@ DRAM_CHANNEL::schedule_ready_request()
 
             ++writes_per_bankgroup[bg];
             ++writes_per_bank[b_idx];
+
+            // Classify write-to-write structural penalty category.
+            if (b_idx == last_scheduled_bank) {
+                // Same bank, different row is 24x; otherwise classify as 6x.
+                if (!b.state.open_row.has_value() || address_mapper.row(cmd.address) != b.state.open_row.value()) {
+                    sim_stats.penalty_twentyfour++;
+                } else {
+                    sim_stats.penalty_six++;
+                }
+            } else if (bg == last_scheduled_bankgroup) {
+                // Different bank in same bank group is 6x.
+                sim_stats.penalty_six++;
+            } else {
+                // Different bank group is 1x.
+                sim_stats.penalty_one++;
+            }
+
+            last_scheduled_bank = b_idx;
+            last_scheduled_bankgroup = bg;
+
+            if (has_last_write_command) {
+                sim_stats.write_to_write_gap_ps += (current_time - last_write_command_time).count();
+                ++sim_stats.write_to_write_samples;
+            }
+            last_write_command_time = current_time;
+            has_last_write_command = true;
         }
 
         // Sanity check:
@@ -680,6 +685,8 @@ DRAM_CHANNEL::operate()
     }
 
     // Otherwise:
+    sim_stats.total_dram_time_ps += clock_period.count();
+
     progress += complete_requests();
     check_write_collision();
     check_read_collision();

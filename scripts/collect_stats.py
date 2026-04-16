@@ -36,7 +36,8 @@ def collect_stats(build: str, output_file: str):
     wr.write('Workload,IPC,MPKI,WPKI,Write-Read-Ratio,Total Cycles,Write RBHR,Write BLP,Write BGLP')
     wr.write(',Write Mode Fraction,Ideal Write Mode Fraction,Ideal Speedup,Read Latency,Write Latency')
     wr.write(',Total Evictions,BARD E Evictions,BARD C Cleanses,BARD Redundant Writebacs,BARD Sync Messages')
-    wr.write(',Read Requests,Write Requests,Activates,Precharges\n')
+    wr.write(',Read Requests,Write Requests,Activates,Precharges')
+    wr.write(',Write Stall %,Write-to-Write Delay (ns),Penalty 1x %,Penalty 6x %,Penalty 24x %\n')
 
     for suite in SUITES:
         data_folder = f'out/{build}/{suite}'
@@ -91,6 +92,11 @@ def collect_stats(build: str, output_file: str):
                 dram_bglp = []
                 dram_read_latency = []
                 dram_write_time = []
+                dram_write_stall_pct = []
+                dram_w2w_delay = []
+                dram_penalty_one = 0
+                dram_penalty_six = 0
+                dram_penalty_twentyfour = 0
                 for i in range(2):
                     while f'Channel {i}' not in line:
                         line = rd.readline()
@@ -128,6 +134,23 @@ def collect_stats(build: str, output_file: str):
                     line = rd.readline()
                     write_mode_time = int(read_stat_from_line(line, 'TIME IN WRITE MODE:', None))
 
+                    # Write stall percent
+                    line = rd.readline()
+                    write_stall_pct = float(read_stat_from_line(line, 'WRITE STALL %:', None))
+
+                    # Write-to-write delay
+                    line = rd.readline()
+                    write_to_write_delay = float(read_stat_from_line(line, 'WRITE TO WRITE DELAY (ns):', None))
+
+                    # Penalty counts
+                    line = rd.readline()
+                    penalty_one = int(read_stat_from_line(line, 'WRITE 1x penalty count:', '6x penalty count'))
+                    penalty_six = int(read_stat_from_line(line, '6x penalty count:', '24x penalty count'))
+                    penalty_twentyfour = int(read_stat_from_line(line, '24x penalty count:', None))
+
+                    # Penalty percentages (already printed by simulator, not parsed here)
+                    line = rd.readline()
+
                     # update dram stats:
                     dram_read_reqs += read_reqs
                     dram_write_reqs += write_reqs
@@ -138,6 +161,11 @@ def collect_stats(build: str, output_file: str):
                     dram_bglp.append(bglp)
                     dram_read_latency.append(read_latency)
                     dram_write_time.append(write_mode_time)
+                    dram_write_stall_pct.append(write_stall_pct)
+                    dram_w2w_delay.append(write_to_write_delay)
+                    dram_penalty_one += penalty_one
+                    dram_penalty_six += penalty_six
+                    dram_penalty_twentyfour += penalty_twentyfour
 
                 dram_stats['read_requests'] = dram_read_reqs
                 dram_stats['write_requests'] = dram_write_reqs
@@ -149,6 +177,11 @@ def collect_stats(build: str, output_file: str):
                 dram_stats['wpki'] = (dram_write_reqs*1000) / sum(cpu_stats[c]['inst'] for c in cpu_stats)
                 dram_stats['read_latency'] = sum(dram_read_latency) / len(dram_read_latency)
                 dram_stats['write_mode_time'] = sum(dram_write_time) / len(dram_write_time)
+                dram_stats['write_stall_pct'] = sum(dram_write_stall_pct) / len(dram_write_stall_pct)
+                dram_stats['w2w_delay_ns'] = sum(dram_w2w_delay) / len(dram_w2w_delay)
+                dram_stats['penalty_one'] = dram_penalty_one
+                dram_stats['penalty_six'] = dram_penalty_six
+                dram_stats['penalty_twentyfour'] = dram_penalty_twentyfour
 
                 # Either the line is EOF or is at BARD stats:
                 while line != '':
@@ -192,6 +225,12 @@ def collect_stats(build: str, output_file: str):
             writes = dram_stats['write_requests']
             acts = dram_stats['acts']
             pre = dram_stats['pre']
+            write_stall_pct = dram_stats['write_stall_pct']
+            w2w_delay_ns = dram_stats['w2w_delay_ns']
+            total_penalties = dram_stats['penalty_one'] + dram_stats['penalty_six'] + dram_stats['penalty_twentyfour']
+            p1_pct = 0.0 if total_penalties == 0 else (100.0 * dram_stats['penalty_one']) / total_penalties
+            p6_pct = 0.0 if total_penalties == 0 else (100.0 * dram_stats['penalty_six']) / total_penalties
+            p24_pct = 0.0 if total_penalties == 0 else (100.0 * dram_stats['penalty_twentyfour']) / total_penalties
 
             total_cycles = max(cpu_stats[cpuid]['cycles'] for cpuid in cpu_stats)
             total_execution_time = total_cycles * 250
@@ -211,6 +250,7 @@ def collect_stats(build: str, output_file: str):
             wr.write(f',{write_time_fraction},{ideal_write_time_fraction},{ideal_speedup},{read_latency},{write_latency}')
             wr.write(f',{total_evicts},{bard_e_evicts},{bard_c_cleanses},{bard_redundant_wb},{bard_sync_msg}')
             wr.write(f',{reads},{writes},{acts},{pre}')
+            wr.write(f',{write_stall_pct},{w2w_delay_ns},{p1_pct},{p6_pct},{p24_pct}')
             wr.write('\n')
         wr.write('\n')
     wr.close() 

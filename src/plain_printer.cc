@@ -133,6 +133,15 @@ inline double mean(T x, U tot)
     return static_cast<double>(x) / static_cast<double>(tot);
 }
 
+template <class T, class U>
+inline double percent(T x, U tot)
+{
+    if (tot == 0) {
+        return 0.0;
+    }
+    return 100.0 * static_cast<double>(x) / static_cast<double>(tot);
+}
+
 std::vector<std::string> champsim::plain_printer::format(DRAM_CHANNEL::stats_type stats)
 {
   std::vector<std::string> lines{};
@@ -150,13 +159,20 @@ std::vector<std::string> champsim::plain_printer::format(DRAM_CHANNEL::stats_typ
   lines.push_back(fmt::format("  READ LATENCY: {:10}", mean(stats.tot_read_latency, stats.reads)));
 
   lines.push_back(fmt::format("  TIME IN WRITE MODE: {:10}", stats.tot_time_in_write_mode));
+  lines.push_back(fmt::format("  WRITE STALL %: {:.4f}", percent(stats.tot_time_in_write_mode, stats.total_dram_time_ps)));
+  auto write_to_write_denominator = (stats.write_to_write_samples == 0) ? 1000.0 : 1000.0 * static_cast<double>(stats.write_to_write_samples);
+  lines.push_back(fmt::format("  WRITE TO WRITE DELAY (ns): {:.4f}",
+                              mean(stats.write_to_write_gap_ps, write_to_write_denominator)));
 
-  //adding for BARBS
-
-  lines.push_back(fmt::format("  WRITE 1x penalty count: {:10}\t6x penalty count: {:10}\t24x penalty count: {:10}", 
+  lines.push_back(fmt::format("  WRITE 1x penalty count: {:10}\t6x penalty count: {:10}\t24x penalty count: {:10}",
                             stats.penalty_one, 
                             stats.penalty_six, 
                             stats.penalty_twentyfour));
+  auto total_penalties = stats.penalty_one + stats.penalty_six + stats.penalty_twentyfour;
+  lines.push_back(fmt::format("  WRITE PENALTY % 1x/6x/24x: {:.4f}/{:.4f}/{:.4f}",
+                              percent(stats.penalty_one, total_penalties),
+                              percent(stats.penalty_six, total_penalties),
+                              percent(stats.penalty_twentyfour, total_penalties)));
 
   return lines;
 }

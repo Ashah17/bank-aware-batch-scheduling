@@ -134,6 +134,8 @@ private:
 
     std::ofstream logger{};
     champsim::chrono::clock::time_point last_cas_command_time{};
+    champsim::chrono::clock::time_point last_write_command_time{};
+    bool has_last_write_command = false;
 public:
     DRAM_CHANNEL(champsim::chrono::picoseconds mc_period,
                 std::size_t rq_size, std::size_t wq_size,

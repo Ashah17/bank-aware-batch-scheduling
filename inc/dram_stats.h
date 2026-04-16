@@ -37,6 +37,9 @@ struct dram_stats
     uint64_t tot_read_occu_post_drain =0;
 
     uint64_t tot_read_latency =0;
+    uint64_t total_dram_time_ps =0;
+    uint64_t write_to_write_gap_ps =0;
+    uint64_t write_to_write_samples =0;
 
     uint64_t rq_full =0;
     uint64_t wq_full =0;
