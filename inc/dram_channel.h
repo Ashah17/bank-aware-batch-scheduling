@@ -188,5 +188,6 @@ private:
  * */
 extern DRAM_PAGE_POLICY OPT_DRAM_PAGE_POLICY;
 extern bool             OPT_DRAM_USE_X8_WRITE_TIMING;
+extern bool             OPT_DRAM_DISABLE_BARBS;
 
 #endif   // DRAM_CHANNEL_h

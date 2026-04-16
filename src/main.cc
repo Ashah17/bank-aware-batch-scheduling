@@ -49,6 +49,7 @@ bool             OPT_CACHE_ENABLE_EAGER_WRITEBACK{false};
 
 DRAM_PAGE_POLICY OPT_DRAM_PAGE_POLICY{DRAM_PAGE_POLICY::OPEN};
 bool             OPT_DRAM_USE_X8_WRITE_TIMING{false};
+bool             OPT_DRAM_DISABLE_BARBS{false};
 
 int              OPT_BARD_MODE{0};
 
@@ -108,6 +109,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   app.add_option("--dram-page-policy", dram_page_policy, "0 = open, 1 = close, 2 = soft-close");
   app.add_flag("--dram-use-x8-write-timing", OPT_DRAM_USE_X8_WRITE_TIMING, "enable to set tCCD_L_WR = 10ns");
+  app.add_flag("--dram-disable-barbs", OPT_DRAM_DISABLE_BARBS, "disable BARBS write scheduling and use FR-FCFS write selection");
   /*
    * BARD OPTIONS;
    * */

@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 
 DRAM_CHANNEL::request_type::request_type(const typename champsim::channel::request_type& req)
     : pf_metadata(req.pf_metadata), address(req.address), v_address(req.address), data(req.data), instr_depend_on_me(req.instr_depend_on_me),
@@ -107,6 +108,8 @@ DRAM_CHANNEL::cmd_output_type
 DRAM_CHANNEL::find_ready_request()
 {
     cmd_output_type out;
+    uint32_t oldest_active_batch = 0;
+    bool has_oldest_active_batch = false;
 
     // First check active buffer for any issuable commands:
     for (const auto& b : banks)
@@ -135,9 +138,21 @@ DRAM_CHANNEL::find_ready_request()
 
     // If nothing could be done, schedule reads and writes:
     auto& q = write_mode ? WQ : RQ;
-    if (write_mode)
+    if (write_mode && !OPT_DRAM_DISABLE_BARBS)
     {
         rebuild_barbs_write_queue();
+        for (const auto& e : WQ)
+        {
+            if (!e.has_value() || e->scheduled)
+                continue;
+
+            if (!has_oldest_active_batch || e->batch_id < oldest_active_batch)
+            {
+                oldest_active_batch = e->batch_id;
+                has_oldest_active_batch = true;
+            }
+        }
+
         for (auto& e : WQ)
         {
             if (e.has_value() && !e->scheduled)
@@ -154,6 +169,8 @@ DRAM_CHANNEL::find_ready_request()
         const auto& req = it->value();
         if (req.scheduled)
             continue;
+        if (write_mode && !OPT_DRAM_DISABLE_BARBS && has_oldest_active_batch && req.batch_id != oldest_active_batch)
+            continue;
 
         size_t b_idx = address_mapper.bank_idx(req.address);
         const auto& b = banks.at(b_idx);
@@ -169,6 +186,8 @@ DRAM_CHANNEL::find_ready_request()
 
         const auto& req = it->value();
         if (req.scheduled)
+            continue;
+        if (write_mode && !OPT_DRAM_DISABLE_BARBS && has_oldest_active_batch && req.batch_id != oldest_active_batch)
             continue;
 
         size_t b_idx = address_mapper.bank_idx(req.address);
@@ -208,11 +227,27 @@ DRAM_CHANNEL::find_ready_request()
         else if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID)
         {
             const auto& best = out.second->value();
-            if (write_mode)
+            if (write_mode && !OPT_DRAM_DISABLE_BARBS)
             {
-                take_candidate = (req.priority_score < best.priority_score)
-                                 || (req.priority_score == best.priority_score && req.batch_id < best.batch_id)
-                                 || (req.priority_score == best.priority_score && req.batch_id == best.batch_id && req.ready_time < best.ready_time);
+                auto command_cost = [] (DRAM_COMMAND::TYPE t)
+                {
+                    switch (t)
+                    {
+                        case DRAM_COMMAND::TYPE::WRITE: return 0;
+                        case DRAM_COMMAND::TYPE::ACTIVATE: return 1;
+                        case DRAM_COMMAND::TYPE::PRECHARGE: return 2;
+                        default: return 3;
+                    }
+                };
+
+                const int req_cost = command_cost(ready_cmd.type);
+                const int best_cost = command_cost(out.first.type);
+
+                take_candidate = (req_cost < best_cost)
+                                 || (req_cost == best_cost && req.priority_score < best.priority_score)
+                                 || (req_cost == best_cost && req.priority_score == best.priority_score && req.batch_id < best.batch_id)
+                                 || (req_cost == best_cost && req.priority_score == best.priority_score && req.batch_id == best.batch_id
+                                     && req.ready_time < best.ready_time);
             }
             else
             {
@@ -304,7 +339,8 @@ DRAM_CHANNEL::schedule_ready_request()
         else
         {
             ++sim_stats.writes;
-            sim_stats.write_row_hits += b.state.next_cas_is_row_hit;
+            const bool current_write_is_row_hit = b.state.next_cas_is_row_hit;
+            sim_stats.write_row_hits += current_write_is_row_hit;
             ++writes_during_drain;
             update_scoreboard_increment(b_idx, bg);
 
@@ -313,8 +349,9 @@ DRAM_CHANNEL::schedule_ready_request()
 
             // Classify write-to-write structural penalty category.
             if (b_idx == last_scheduled_bank) {
-                // Same bank, different row is 24x; otherwise classify as 6x.
-                if (!b.state.open_row.has_value() || address_mapper.row(cmd.address) != b.state.open_row.value()) {
+                // If this write is not a row hit, the prior write-to-write path
+                // likely required close/open on the same bank (24x class).
+                if (!current_write_is_row_hit) {
                     sim_stats.penalty_twentyfour++;
                 } else {
                     sim_stats.penalty_six++;
