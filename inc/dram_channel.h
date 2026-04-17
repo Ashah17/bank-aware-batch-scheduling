@@ -170,6 +170,8 @@ public:
     size_t last_scheduled_bankgroup = -1; //can init both of these to -1 for start
     size_t last_scheduled_bank = -1; 
 
+    size_t rr_curr_bank;
+
 
     //fill in methods in .cc file
     uint32_t calc_priority_score(const request_type& req); //pscore calc

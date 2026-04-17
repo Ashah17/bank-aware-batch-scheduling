@@ -46,7 +46,8 @@ DRAM_CHANNEL::DRAM_CHANNEL(
     writes_per_bank(_num_bankgroups*_num_banks, 0),
     writes_per_bankgroup(_num_bankgroups, 0),
     last_scheduled_bankgroup(-1),
-    last_scheduled_bank(-1)
+    last_scheduled_bank(-1),
+    rr_curr_bank(0) //can init to 0
 {
 #if defined(DRAM_ENABLE_LOGGER)
     logger = std::ofstream("dram_channel." + std::to_string(channel_id) + ".log");
@@ -135,99 +136,111 @@ DRAM_CHANNEL::find_ready_request()
 
     // If nothing could be done, schedule reads and writes:
     auto& q = write_mode ? WQ : RQ;
-    if (write_mode)
-    {
-        rebuild_barbs_write_queue();
-        for (auto& e : WQ)
-        {
-            if (e.has_value() && !e->scheduled)
-                e->priority_score = calc_priority_score(e.value());
-        }
-    }
 
-    std::vector<bool> banks_with_row_hits(num_bankgroups*num_banks, false);
-    for (auto it = q.begin(); it != q.end(); it++)
-    {
-        if (!it->has_value())
-            continue;
+    //RR implementation, talked to prof about
+    //start with most pending writes, then RR from there
+    //effective RR capacity increases with this
 
-        const auto& req = it->value();
-        if (req.scheduled)
-            continue;
+    size_t total_banks = num_bankgroups * num_banks;
 
-        size_t b_idx = address_mapper.bank_idx(req.address);
-        const auto& b = banks.at(b_idx);
+    std::vector<bool> row_hits_banks(total_banks, false); //track row hits
 
-        if (b.state.open_row.has_value() && b.state.open_row.value() == address_mapper.row(req.address))
-            banks_with_row_hits[b_idx] = true;
-    }
-
-    for (auto it = q.begin(); it != q.end(); it++)
-    {
-        if (!it->has_value())
-            continue;
-
-        const auto& req = it->value();
-        if (req.scheduled)
-            continue;
-
-        size_t b_idx = address_mapper.bank_idx(req.address);
-        const auto& b = banks.at(b_idx);
-
-        DRAM_COMMAND ready_cmd{};
-        ready_cmd.address = req.address;
+    for (auto it = q.begin(); it != q.end(); it++) {
         
-        // Cannot schedule anything if the bank has an active request:
-        if (b.active_request.has_value())
+        if (!it->has_value() || it->value().scheduled) {
             continue;
-
-        if (b.state.open_row.has_value())
-        {
-            if (b.state.open_row.value() == address_mapper.row(req.address))
-            {
-                if (write_mode && current_time >= b.state.write_ok)
-                    ready_cmd.type = DRAM_COMMAND::TYPE::WRITE;
-                else if (!write_mode && current_time >= b.state.read_ok)
-                    ready_cmd.type = DRAM_COMMAND::TYPE::READ;
-            }
-            else if (!banks_with_row_hits[b_idx] && current_time >= b.state.pre_ok)
-            {
-                ready_cmd.type = DRAM_COMMAND::TYPE::PRECHARGE;
-            }
-        }
-        else if (current_time >= b.state.act_ok && faw.size() < 4)
-        {
-            ready_cmd.type = DRAM_COMMAND::TYPE::ACTIVATE;
         }
 
-        bool take_candidate = false;
-        if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID && out.first.type == DRAM_COMMAND::TYPE::INVALID)
-        {
-            take_candidate = true;
-        }
-        else if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID)
-        {
-            const auto& best = out.second->value();
-            if (write_mode)
-            {
-                take_candidate = (req.priority_score < best.priority_score)
-                                 || (req.priority_score == best.priority_score && req.batch_id < best.batch_id)
-                                 || (req.priority_score == best.priority_score && req.batch_id == best.batch_id && req.ready_time < best.ready_time);
-            }
-            else
-            {
-                take_candidate = req.ready_time < best.ready_time;
-            }
-        }
+        auto& req = it->value();
+        size_t b_idx = address_mapper.bank_idx(req.address);
+        auto& b = banks.at(b_idx);
+        size_t row = address_mapper.row(req.address);
 
-        if (take_candidate)
-        {
-            if (ready_cmd.type == DRAM_COMMAND::TYPE::READ || ready_cmd.type == DRAM_COMMAND::TYPE::WRITE)
-                ready_cmd.autopre = do_autopre(ready_cmd);
-
-            out = cmd_output_type{ready_cmd, it};
+        if (b.state.open_row.has_value() && b.state.open_row.value() == row) {
+            row_hits_banks[b_idx] = true;
         }
     }
+
+    size_t start_bank = rr_curr_bank;
+
+    if (write_mode) {
+        std::vector<size_t> pending_writes(total_banks, 0); //count pending writes per bank
+
+        for (const auto& w : WQ) {
+            if (w.has_value() && !w->scheduled) {
+                size_t b_idx = address_mapper.bank_idx(w->address);
+                pending_writes[b_idx]++;
+            }
+        }
+
+        //find bank with max pending writes
+        size_t max_writes = 0;
+
+        for (size_t offset = 0; offset < total_banks; offset++) {
+            size_t b_idx = (rr_curr_bank + offset) % total_banks;
+
+            if (pending_writes[b_idx] > max_writes) {
+                max_writes = pending_writes[b_idx];
+                start_bank = b_idx;
+            }
+        }
+    }
+
+    for (size_t offset = 0; offset < total_banks; offset++) {
+        size_t b_idx = (start_bank + offset) % total_banks;
+        auto& b = banks.at(b_idx);
+
+        if (b.active_request.has_value()) {
+            continue;
+        }
+
+        for (auto it = q.begin(); it != q.end(); it++) {
+            if (!it->has_value() || it->value().scheduled) {
+                continue;
+            }
+
+            auto& req = it->value();
+
+            if (address_mapper.bank_idx(req.address) != b_idx) {
+                continue;
+            }
+
+            //idk wut this below does tbh needa figure
+            DRAM_COMMAND ready_cmd{};
+            ready_cmd.address = req.address;
+
+            if (b.state.open_row.has_value()) {
+                if (b.state.open_row.value() == address_mapper.row(req.address)) {
+                    if (write_mode && current_time >= b.state.write_ok) {
+                        ready_cmd.type = DRAM_COMMAND::TYPE::WRITE;
+                    } else if (!write_mode && current_time >= b.state.write_ok) {
+                        ready_cmd.type = DRAM_COMMAND::TYPE::READ;
+                    }
+                }
+
+                else if (!row_hits_banks[b_idx] && current_time >= b.state.pre_ok) {
+                    ready_cmd.type = DRAM_COMMAND::TYPE::PRECHARGE;
+                }
+            } else if (current_time >= b.state.act_ok && faw.size() < 4) {
+                ready_cmd.type = DRAM_COMMAND::TYPE::ACTIVATE;
+            }
+
+            if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID) {
+                if (ready_cmd.type == DRAM_COMMAND::TYPE::READ ||ready_cmd.type == DRAM_COMMAND::TYPE::WRITE) {
+                    ready_cmd.autopre = do_autopre(ready_cmd);
+
+                    out = cmd_output_type{ready_cmd, it};
+                    break;
+                }
+            }
+
+            if (out.first.type != DRAM_COMMAND::TYPE::INVALID) {
+                break;
+            }
+        }
+    }
+
+
 
     // we failed to schedule a command that advances an request
     if (out.first.type == DRAM_COMMAND::TYPE::INVALID)
@@ -240,7 +253,7 @@ DRAM_CHANNEL::find_ready_request()
                 auto& b = banks[b_idx];
 
                 // If the bank has a pending row hit or there is no open row, skip
-                if (b.active_request.has_value() || banks_with_row_hits[b_idx] || !b.state.open_row.has_value())
+                if (b.active_request.has_value() || row_hits_banks[b_idx] || !b.state.open_row.has_value())
                     continue;
                 
                 if (current_time >= b.state.row_open_until && current_time >= b.state.pre_ok)
@@ -281,27 +294,6 @@ DRAM_CHANNEL::schedule_ready_request()
     size_t bg = address_mapper.bankgroup(cmd.address);
     auto& b = banks[b_idx];
 
-    //adding this for BARBS stats
-    if (b_idx == last_scheduled_bank) {
-        //compare the curr commands row to the open row in bank
-        if (address_mapper.row(cmd.address) != b.state.open_row) {
-            //24x
-            sim_stats.penalty_twentyfour++;
-        } else {
-            //same bank but row hit or na either way is 6x
-            sim_stats.penalty_six++;
-        }
-    } else if (bg == last_scheduled_bankgroup) {
-        //dif bank same bg = 6x
-        sim_stats.penalty_six++; 
-    } else {
-        //dif bankgrup = 1x
-        sim_stats.penalty_one++; 
-    }
-
-    last_scheduled_bank = b_idx;
-    last_scheduled_bankgroup = bg;
-
     auto update = [this] (champsim::chrono::clock::time_point& t, champsim::chrono::clock::duration delta)
     {
         t = std::max(t, this->current_time + delta);
@@ -327,8 +319,32 @@ DRAM_CHANNEL::schedule_ready_request()
             ++sim_stats.writes;
             sim_stats.write_row_hits += b.state.next_cas_is_row_hit;
             ++writes_during_drain;
-            update_scoreboard_increment(b_idx, bg);
 
+            //BARBS - adding logic here to calc penalty distribution
+            //based on BARD paper
+
+            if (last_scheduled_bank != static_cast<size_t>(-1)) {
+                if (b_idx == last_scheduled_bank) {
+                    //same bank
+                    if (!b.state.next_cas_is_row_hit) {
+                        //row miss = 24
+                        sim_stats.penalty_six++; 
+                    } else {
+                        //row hit = 1
+                        sim_stats.penalty_one++; 
+                    }
+                } else if (bg == last_scheduled_bankgroup) {
+                    //same bankgroup
+                    sim_stats.penalty_six++; 
+                } else {
+                    //diff bankgroup
+                    sim_stats.penalty_one++;
+                }
+            }
+
+            last_scheduled_bank = b_idx; //set for next time
+            last_scheduled_bankgroup = bg; 
+            
             ++writes_per_bankgroup[bg];
             ++writes_per_bank[b_idx];
         }
