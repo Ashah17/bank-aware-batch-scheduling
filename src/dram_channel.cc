@@ -325,7 +325,7 @@ DRAM_CHANNEL::schedule_ready_request()
 
             if (last_scheduled_bank != static_cast<size_t>(-1)) {
                 if (b_idx == last_scheduled_bank) {
-                    //same bank
+                    //same bank pen
                     if (!b.state.next_cas_is_row_hit) {
                         //row miss = 24
                         sim_stats.penalty_six++; 
@@ -334,10 +334,10 @@ DRAM_CHANNEL::schedule_ready_request()
                         sim_stats.penalty_one++; 
                     }
                 } else if (bg == last_scheduled_bankgroup) {
-                    //same bankgroup
+                    //same bankgroup pen
                     sim_stats.penalty_six++; 
                 } else {
-                    //diff bankgroup
+                    //diff bankgroup pen
                     sim_stats.penalty_one++;
                 }
             }
