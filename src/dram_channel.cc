@@ -213,7 +213,7 @@ DRAM_CHANNEL::find_ready_request()
                 if (b.state.open_row.value() == address_mapper.row(req.address)) {
                     if (write_mode && current_time >= b.state.write_ok) {
                         ready_cmd.type = DRAM_COMMAND::TYPE::WRITE;
-                    } else if (!write_mode && current_time >= b.state.write_ok) {
+                    } else if (!write_mode && current_time >= b.state.read_ok) {
                         ready_cmd.type = DRAM_COMMAND::TYPE::READ;
                     }
                 }
@@ -228,10 +228,10 @@ DRAM_CHANNEL::find_ready_request()
             if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID) {
                 if (ready_cmd.type == DRAM_COMMAND::TYPE::READ ||ready_cmd.type == DRAM_COMMAND::TYPE::WRITE) {
                     ready_cmd.autopre = do_autopre(ready_cmd);
-
-                    out = cmd_output_type{ready_cmd, it};
-                    break;
                 }
+
+                out = cmd_output_type{ready_cmd, it};
+                break;
             }
 
             if (out.first.type != DRAM_COMMAND::TYPE::INVALID) {
@@ -294,6 +294,10 @@ DRAM_CHANNEL::schedule_ready_request()
     size_t bg = address_mapper.bankgroup(cmd.address);
     auto& b = banks[b_idx];
 
+    //RR update - move the bank forward based on curr bank
+
+    rr_curr_bank = (b_idx + 1) % (num_bankgroups * num_banks);
+
     auto update = [this] (champsim::chrono::clock::time_point& t, champsim::chrono::clock::duration delta)
     {
         t = std::max(t, this->current_time + delta);
@@ -328,7 +332,7 @@ DRAM_CHANNEL::schedule_ready_request()
                     //same bank pen
                     if (!b.state.next_cas_is_row_hit) {
                         //row miss = 24
-                        sim_stats.penalty_six++; 
+                        sim_stats.penalty_twentyfour++; 
                     } else {
                         //row hit = 1
                         sim_stats.penalty_one++; 
