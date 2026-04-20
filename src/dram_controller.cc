@@ -187,15 +187,6 @@ MEMORY_CONTROLLER::add_wq(const request_type& packet)
         wq_it->value().ready_time = current_time;
 
         wq_it->value().install_time = current_time;
-        wq_it->value().batch_id = static_cast<uint32_t>(channel->curr_batch_id);
-        wq_it->value().priority_score = channel->calc_priority_score(wq_it->value());
-
-        ++channel->curr_batch_fill;
-        if (channel->curr_batch_fill >= channel->batch_size_limit)
-        {
-            channel->curr_batch_fill = 0;
-            ++channel->curr_batch_id;
-        }
 
         ++channel->sim_stats.write_requests;
 

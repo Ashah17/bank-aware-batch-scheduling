@@ -84,10 +84,6 @@ struct DRAM_CHANNEL final : public champsim::operable
         std::vector<uint64_t> instr_depend_on_me{};
         std::vector<std::deque<response_type>*> to_return{};
 
-        //here adding the pscore n batch_id
-        uint32_t batch_id = 0;
-        uint32_t priority_score = 0;
-
         explicit request_type(const typename champsim::channel::request_type& req);
     };
     using value_type = request_type;
@@ -158,26 +154,12 @@ public:
 
     bool does_bank_have_pending_write(size_t) const;
 
-    //init the new stuff here - write queue (of reqs), scoreboard
-    //write 
-
-    std::vector<std::vector<size_t>> barbs_write_queue; // per bank list of WQ slots
-    scoreboard global_scoreboard; //scoreboard
-    uint64_t curr_batch_id = 0; //reqs get batched w this id
-    size_t batch_size_limit = 1;
-    size_t curr_batch_fill = 0;
-
+    //for penalty distribution stats
     size_t last_scheduled_bankgroup = -1; //can init both of these to -1 for start
     size_t last_scheduled_bank = -1; 
 
+    //for bank aware rr scheduling
     size_t rr_curr_bank;
-
-
-    //fill in methods in .cc file
-    uint32_t calc_priority_score(const request_type& req); //pscore calc
-    void rebuild_barbs_write_queue();
-    void update_scoreboard_increment(size_t bank_idx, size_t bank_group_idx);
-    void update_scoreboard_decrement(size_t bank_idx, size_t bank_group_idx);
 
 private:
     bool do_autopre(const DRAM_COMMAND&);

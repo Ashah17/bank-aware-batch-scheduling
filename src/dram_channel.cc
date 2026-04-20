@@ -9,8 +9,7 @@
 #include <iostream>
 
 DRAM_CHANNEL::request_type::request_type(const typename champsim::channel::request_type& req)
-    : pf_metadata(req.pf_metadata), address(req.address), v_address(req.address), data(req.data), instr_depend_on_me(req.instr_depend_on_me),
-      batch_id(0), priority_score(0)
+    : pf_metadata(req.pf_metadata), address(req.address), v_address(req.address), data(req.data), instr_depend_on_me(req.instr_depend_on_me)
 {
   asid[0] = req.asid[0];
   asid[1] = req.asid[1];
@@ -40,9 +39,6 @@ DRAM_CHANNEL::DRAM_CHANNEL(
     channel_id(_channel_id),
     address_mapper(am),
     dram_timing(timing),
-    barbs_write_queue(_num_bankgroups * _num_banks),
-    global_scoreboard(_num_bankgroups, _num_bankgroups * _num_banks),
-    batch_size_limit(std::max<std::size_t>(1, wq_size/8)),
     writes_per_bank(_num_bankgroups*_num_banks, 0),
     writes_per_bankgroup(_num_bankgroups, 0),
     last_scheduled_bankgroup(-1),
@@ -52,56 +48,6 @@ DRAM_CHANNEL::DRAM_CHANNEL(
 #if defined(DRAM_ENABLE_LOGGER)
     logger = std::ofstream("dram_channel." + std::to_string(channel_id) + ".log");
 #endif
-}
-
-//adding changes here for BARBS
-
-void DRAM_CHANNEL::update_scoreboard_increment(size_t bank_idx, size_t bank_group_idx) {
-    //increment each one - some write req got dispatched here so
-    global_scoreboard.bank_counters[bank_idx]++;
-    global_scoreboard.bank_group_counters[bank_group_idx]++;
-}
-
-void DRAM_CHANNEL::update_scoreboard_decrement(size_t bank_idx, size_t bank_group_idx) {
-    //same as above but decrement (write req completed)
-    if (global_scoreboard.bank_counters[bank_idx] > 0)
-        global_scoreboard.bank_counters[bank_idx]--;
-    if (global_scoreboard.bank_group_counters[bank_group_idx] > 0)
-        global_scoreboard.bank_group_counters[bank_group_idx]--;
-}
-
-uint32_t DRAM_CHANNEL::calc_priority_score(const request_type& req)
-{
-    const size_t bankgroup = address_mapper.bankgroup(req.address);
-    const size_t bank = address_mapper.bank_idx(req.address);
-
-    const uint32_t curr_bankgroup_busy = global_scoreboard.bank_group_counters[bankgroup];
-    const uint32_t curr_bank_busy = global_scoreboard.bank_counters[bank];
-    const uint32_t bank_queue_depth = static_cast<uint32_t>(barbs_write_queue[bank].size());
-
-    constexpr uint32_t bank_conflict_weight = 24;
-    constexpr uint32_t bankgroup_conflict_weight = 6;
-    constexpr uint32_t queue_depth_weight = 1;
-    return bank_conflict_weight*curr_bank_busy + bankgroup_conflict_weight*curr_bankgroup_busy + queue_depth_weight*bank_queue_depth;
-}
-
-void DRAM_CHANNEL::rebuild_barbs_write_queue()
-{
-    for (auto& q : barbs_write_queue)
-        q.clear();
-
-    for (size_t idx = 0; idx < WQ.size(); idx++)
-    {
-        if (!WQ[idx].has_value())
-            continue;
-
-        auto& req = WQ[idx].value();
-        if (req.scheduled)
-            continue;
-
-        size_t bank = address_mapper.bank_idx(req.address);
-        barbs_write_queue[bank].push_back(idx);
-    }
 }
 
 DRAM_CHANNEL::cmd_output_type
@@ -506,9 +452,6 @@ DRAM_CHANNEL::complete_requests()
 
         if (it->value().scheduled && current_time >= it->value().ready_time)
         {
-            const auto bank = address_mapper.bank_idx(it->value().address);
-            const auto bankgroup = address_mapper.bankgroup(it->value().address);
-            update_scoreboard_decrement(bank, bankgroup);
             it->reset();
         }
     }
