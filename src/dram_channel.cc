@@ -77,12 +77,12 @@ DRAM_CHANNEL::find_ready_request()
                 size_t curr_bankgroup = address_mapper.bankgroup(ready_cmd.address); //curr
                 size_t best_bankgroup = address_mapper.bankgroup(out.second->value().address); //best one yet
 
-                bool curr_diff = (new_bankgroup != last_scheduled_bankgroup);
-                bool best_diff = (alt_bankgroup != last_scheduled_bankgroup);
+                bool curr_diff = (curr_bankgroup != last_scheduled_bankgroup);
+                bool best_diff = (best_bankgroup != last_scheduled_bankgroup);
 
                 if (curr_diff && !best_diff) {
                     out = {ready_cmd, req_it}; //if curr is diff but old best wasn't diff then take
-                } else if (new_diff == alt_diff) {
+                } else if (curr_diff == best_diff) {
                     if (out.second->value().ready_time > req_it->value().ready_time) {
                         out = {ready_cmd, req_it}; //or else break ties with time (both diff/both same)
                     }
@@ -98,7 +98,7 @@ DRAM_CHANNEL::find_ready_request()
     auto& q = write_mode ? WQ : RQ;
 
     //RR implementation, talked to prof about
-    //start with most pending writes, then RR from there
+    //start with most pending writes (chosen before), then RR from there
     //effective RR capacity increases with this
 
     size_t total_banks = num_bankgroups * num_banks;
@@ -121,36 +121,11 @@ DRAM_CHANNEL::find_ready_request()
         }
     }
 
-    size_t start_bank = rr_curr_bank;
-
-    if (write_mode) {
-        std::vector<size_t> pending_writes(total_banks, 0); //count pending writes per bank
-
-        for (const auto& w : WQ) {
-            if (w.has_value() && !w->scheduled) {
-                size_t b_idx = address_mapper.bank_idx(w->address);
-                pending_writes[b_idx]++;
-            }
-        }
-
-        //find bank with max pending writes
-        size_t max_writes = 0;
-
-        for (size_t offset = 0; offset < total_banks; offset++) {
-            size_t b_idx = (rr_curr_bank + offset) % total_banks;
-
-            if (pending_writes[b_idx] > max_writes) {
-                max_writes = pending_writes[b_idx];
-                start_bank = b_idx;
-            }
-        }
-    }
-
     for (size_t offset = 0; offset < total_banks; offset++) {
-        size_t b_idx = (start_bank + offset) % total_banks;
-        auto& b = banks.at(b_idx);
+        size_t bank_idx = (rr_curr_bank + offset) % total_banks;
+        auto& bank = banks.at(bank_idx);
 
-        if (b.active_request.has_value()) {
+        if (bank.active_request.has_value()) {
             continue;
         }
 
@@ -159,44 +134,39 @@ DRAM_CHANNEL::find_ready_request()
                 continue;
             }
 
-            auto& req = it->value();
-
-            if (address_mapper.bank_idx(req.address) != b_idx) {
+            if (address_mapper.bank_idx(it->value().address) != bank_idx) {
                 continue;
             }
 
-            //idk wut this below does tbh needa figure
             DRAM_COMMAND ready_cmd{};
-            ready_cmd.address = req.address;
+            ready_cmd.address = it->value().address;
 
-            if (b.state.open_row.has_value()) {
-                if (b.state.open_row.value() == address_mapper.row(req.address)) {
-                    if (write_mode && current_time >= b.state.write_ok) {
+            if (bank.state.open_row.has_value()) {
+                if (bank.state.open_row.value() == address_mapper.row(it->value().address)) {
+                    if (write_mode && current_time >= bank.state.write_ok) {
                         ready_cmd.type = DRAM_COMMAND::TYPE::WRITE;
-                    } else if (!write_mode && current_time >= b.state.read_ok) {
+                    } else if (!write_mode && current_time >= bank.state.read_ok) {
                         ready_cmd.type = DRAM_COMMAND::TYPE::READ;
                     }
-                }
-
-                else if (!row_hits_banks[b_idx] && current_time >= b.state.pre_ok) {
+                } else if (!row_hits_banks[bank_idx] && current_time >= bank.state.pre_ok) {
+                    //open page precharge optimization
                     ready_cmd.type = DRAM_COMMAND::TYPE::PRECHARGE;
+                } else if (current_time >= bank.state.act_ok && faw.size() < 4) {
+                    ready_cmd.type = DRAM_COMMAND::TYPE::ACTIVATE;
                 }
-            } else if (current_time >= b.state.act_ok && faw.size() < 4) {
-                ready_cmd.type = DRAM_COMMAND::TYPE::ACTIVATE;
+
+                if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID) {
+                    if (ready_cmd.type == DRAM_COMMAND::TYPE::READ || ready_cmd.type == DRAM_COMMAND::TYPE::WRITE) {
+                        ready_cmd.autopre = do_autopre(ready_cmd);
+                    }
+
+                    out = cmd_output_type{ready_cmd, it};
+                    break;
+                }
             }
-
-            if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID) {
-                if (ready_cmd.type == DRAM_COMMAND::TYPE::READ ||ready_cmd.type == DRAM_COMMAND::TYPE::WRITE) {
-                    ready_cmd.autopre = do_autopre(ready_cmd);
-                }
-
-                out = cmd_output_type{ready_cmd, it};
+            if (out.first.type != DRAM_COMMAND::TYPE::INVALID) {
                 break;
-            }  
-        }
-
-        if (out.first.type != DRAM_COMMAND::TYPE::INVALID) {
-            break;
+            }
         }
     }
 
@@ -620,6 +590,32 @@ DRAM_CHANNEL::update_read_write_priority()
 
         std::fill(writes_per_bank.begin(), writes_per_bank.end(), 0);
         std::fill(writes_per_bankgroup.begin(), writes_per_bankgroup.end(), 0);
+
+        //doing the RR calc here - it's write mode so we can see what's currently bank with most pending writes
+
+        size_t total_banks = num_bankgroups * num_banks;
+        std::vector<size_t> pending_writes(total_banks, 0);
+
+        //count current pending writes per bank (check writes in WQ)
+        for (const auto& write : WQ) {
+            if (write.has_value() && !write->scheduled) {
+                pending_writes[address_mapper.bank_idx(write->address)]++;
+            }
+        }
+
+        //now take the bank w largest number of pending writes
+        size_t max_writes = 0;
+        size_t best_bank = 0;
+        
+        for (auto i = 0; i < total_banks; i++) {
+            if (pending_writes[i] > max_writes) {
+                max_writes = pending_writes[i];
+                best_bank = i;
+            }  
+        }
+
+        //set global to best bank we found
+        rr_curr_bank = best_bank;
     }
 }
 
