@@ -151,22 +151,23 @@ DRAM_CHANNEL::find_ready_request()
                 } else if (!row_hits_banks[bank_idx] && current_time >= bank.state.pre_ok) {
                     //open page precharge optimization
                     ready_cmd.type = DRAM_COMMAND::TYPE::PRECHARGE;
-                } else if (current_time >= bank.state.act_ok && faw.size() < 4) {
-                    ready_cmd.type = DRAM_COMMAND::TYPE::ACTIVATE;
                 }
-
-                if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID) {
-                    if (ready_cmd.type == DRAM_COMMAND::TYPE::READ || ready_cmd.type == DRAM_COMMAND::TYPE::WRITE) {
-                        ready_cmd.autopre = do_autopre(ready_cmd);
-                    }
-
-                    out = cmd_output_type{ready_cmd, it};
-                    break;
-                }
+            } else if (current_time >= bank.state.act_ok && faw.size() < 4) {
+                ready_cmd.type = DRAM_COMMAND::TYPE::ACTIVATE;
             }
-            if (out.first.type != DRAM_COMMAND::TYPE::INVALID) {
+
+            if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID) {
+                if (ready_cmd.type == DRAM_COMMAND::TYPE::READ || ready_cmd.type == DRAM_COMMAND::TYPE::WRITE) {
+                    ready_cmd.autopre = do_autopre(ready_cmd);
+                }
+
+                out = cmd_output_type{ready_cmd, it};
                 break;
             }
+        }
+        
+        if (out.first.type != DRAM_COMMAND::TYPE::INVALID) {
+            break;
         }
     }
 
