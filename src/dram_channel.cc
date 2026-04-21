@@ -69,10 +69,24 @@ DRAM_CHANNEL::find_ready_request()
             DRAM_COMMAND ready_cmd{req_it->value().address, cmd_type};
             ready_cmd.autopre = do_autopre(ready_cmd);
 
-            if (out.first.type == DRAM_COMMAND::TYPE::INVALID
-                || (out.second->value().ready_time > req_it->value().ready_time))
+            if (out.first.type == DRAM_COMMAND::TYPE::INVALID)
             {
                 out = cmd_output_type{ready_cmd, req_it};
+            } else {
+                //now take into account the bank groups - diff bank groups is good
+                size_t curr_bankgroup = address_mapper.bankgroup(ready_cmd.address); //curr
+                size_t best_bankgroup = address_mapper.bankgroup(out.second->value().address); //best one yet
+
+                bool curr_diff = (new_bankgroup != last_scheduled_bankgroup);
+                bool best_diff = (alt_bankgroup != last_scheduled_bankgroup);
+
+                if (curr_diff && !best_diff) {
+                    out = {ready_cmd, req_it}; //if curr is diff but old best wasn't diff then take
+                } else if (new_diff == alt_diff) {
+                    if (out.second->value().ready_time > req_it->value().ready_time) {
+                        out = {ready_cmd, req_it}; //or else break ties with time (both diff/both same)
+                    }
+                }
             }
         }
     }
@@ -178,11 +192,11 @@ DRAM_CHANNEL::find_ready_request()
 
                 out = cmd_output_type{ready_cmd, it};
                 break;
-            }
+            }  
+        }
 
-            if (out.first.type != DRAM_COMMAND::TYPE::INVALID) {
-                break;
-            }
+        if (out.first.type != DRAM_COMMAND::TYPE::INVALID) {
+            break;
         }
     }
 
