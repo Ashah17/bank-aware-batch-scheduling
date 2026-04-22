@@ -313,27 +313,6 @@ DRAM_CHANNEL::schedule_ready_request()
     size_t bg = address_mapper.bankgroup(cmd.address);
     auto& b = banks[b_idx];
 
-    //adding this for BARBS stats
-    if (b_idx == last_scheduled_bank) {
-        //compare the curr commands row to the open row in bank
-        if (address_mapper.row(cmd.address) != b.state.open_row) {
-            //24x
-            sim_stats.penalty_twentyfour++;
-        } else {
-            //same bank but row hit or na either way is 6x
-            sim_stats.penalty_six++;
-        }
-    } else if (bg == last_scheduled_bankgroup) {
-        //dif bank same bg = 6x
-        sim_stats.penalty_six++; 
-    } else {
-        //dif bankgrup = 1x
-        sim_stats.penalty_one++; 
-    }
-
-    last_scheduled_bank = b_idx;
-    last_scheduled_bankgroup = bg;
-
     auto update = [this] (champsim::chrono::clock::time_point& t, champsim::chrono::clock::duration delta)
     {
         t = std::max(t, this->current_time + delta);
@@ -360,6 +339,28 @@ DRAM_CHANNEL::schedule_ready_request()
             sim_stats.write_row_hits += b.state.next_cas_is_row_hit;
             ++writes_during_drain;
             update_scoreboard_increment(b_idx, bg);
+
+            //adding this for BARBS stats
+            if (b_idx == last_scheduled_bank) {
+                //compare the curr commands row to the open row in bank
+                if (address_mapper.row(cmd.address) != b.state.open_row) {
+                    //24x
+                    sim_stats.penalty_twentyfour++;
+                } else {
+                    //same bank but row hit or na either way is 6x
+                    sim_stats.penalty_six++;
+                }
+            } else if (bg == last_scheduled_bankgroup) {
+                //dif bank same bg = 6x
+                sim_stats.penalty_six++; 
+            } else {
+                //dif bankgrup = 1x
+                sim_stats.penalty_one++; 
+            }
+
+            last_scheduled_bank = b_idx;
+            last_scheduled_bankgroup = bg;
+            
 
             ++writes_per_bankgroup[bg];
             ++writes_per_bank[b_idx];
