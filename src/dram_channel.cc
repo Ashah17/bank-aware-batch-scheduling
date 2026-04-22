@@ -129,7 +129,7 @@ DRAM_CHANNEL::find_ready_request()
 
         if ((is_read && current_time >= b.state.read_ok) || (!is_read && current_time >= b.state.write_ok)) {
             //same code to create command
-            DRAM_COMMAND::TYPE cmd_type = is_ready ? DRAM_COMMAND::TYPE::READY : DRAM_COMMAND::TYPE::WRITE;
+            DRAM_COMMAND::TYPE cmd_type = is_read ? DRAM_COMMAND::TYPE::READ : DRAM_COMMAND::TYPE::WRITE;
             DRAM_COMMAND ready_cmd{req_it->value().address, cmd_type};
             ready_cmd.autopre = do_autopre(ready_cmd);
 
@@ -173,92 +173,89 @@ DRAM_CHANNEL::find_ready_request()
         }
     }
 
-    std::vector<bool> banks_with_row_hits(num_bankgroups*num_banks, false);
-    for (auto it = q.begin(); it != q.end(); it++)
-    {
-        if (!it->has_value())
+    std::vector<bool> banks_with_row_hits(num_bankgroups * num_banks, false);
+
+    for (auto it = q.begin(); it != q.end(); it++) {
+        if (!it->has_value()) {
             continue;
+        }
 
         const auto& req = it->value();
-        if (req.scheduled)
+        if (req.scheduled) {
             continue;
+        }
 
+        //open row policy optimization (same as before) - check banks w open row
         size_t b_idx = address_mapper.bank_idx(req.address);
         const auto& b = banks.at(b_idx);
 
-        if (b.state.open_row.has_value() && b.state.open_row.value() == address_mapper.row(req.address))
-            banks_with_row_hits[b_idx] = true;
-    }
-
-    for (auto it = q.begin(); it != q.end(); it++)
-    {
-        if (!it->has_value())
-            continue;
-
-        const auto& req = it->value();
-        if (req.scheduled)
-            continue;
-
-        size_t b_idx = address_mapper.bank_idx(req.address);
-        const auto& b = banks.at(b_idx);
-
-        DRAM_COMMAND ready_cmd{};
-        ready_cmd.address = req.address;
-        
-        // Cannot schedule anything if the bank has an active request:
-        if (b.active_request.has_value())
-            continue;
-
-        if (b.state.open_row.has_value())
-        {
-            if (b.state.open_row.value() == address_mapper.row(req.address))
-            {
-                if (write_mode && current_time >= b.state.write_ok)
-                    ready_cmd.type = DRAM_COMMAND::TYPE::WRITE;
-                else if (!write_mode && current_time >= b.state.read_ok)
-                    ready_cmd.type = DRAM_COMMAND::TYPE::READ;
-            }
-            else if (!banks_with_row_hits[b_idx] && current_time >= b.state.pre_ok)
-            {
-                ready_cmd.type = DRAM_COMMAND::TYPE::PRECHARGE;
-            }
-        }
-        else if (current_time >= b.state.act_ok && faw.size() < 4)
-        {
-            ready_cmd.type = DRAM_COMMAND::TYPE::ACTIVATE;
+        if (b.state.open_row.has_value() && 
+            b.state.open_row.value() == address_mapper.row(req.address)) {
+                banks_with_row_hits[b_idx] = true;
         }
 
-        bool take_candidate = false;
-        if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID && out.first.type == DRAM_COMMAND::TYPE::INVALID)
-        {
-            take_candidate = true;
-        }
-        else if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID)
-        {
-            const auto& best = out.second->value();
-            if (write_mode)
-            {
-                take_candidate = (req.priority_score < best.priority_score)
-                     || (req.priority_score == best.priority_score && req.batch_id < best.batch_id)
-                     || (req.priority_score == best.priority_score && req.batch_id == best.batch_id && req.ready_time < best.ready_time);
+        for (auto it = q.begin(); it != q.end(); it++) {
+            if (!it->has_value()) {
+                continue;
             }
-            else
-            {
-                take_candidate = req.ready_time < best.ready_time;
+
+            const auto& req = it->value();
+            if (req.scheduled) {
+                continue;
             }
-        }
+            
+            size_t b_idx = address_mapper.bank_idx(req.address);
+            const auto& b = banks.at(b_idx);
 
-        if (take_candidate)
-        {
-            if (ready_cmd.type == DRAM_COMMAND::TYPE::READ || ready_cmd.type == DRAM_COMMAND::TYPE::WRITE)
-                ready_cmd.autopre = do_autopre(ready_cmd);
+            DRAM_COMMAND ready_cmd{};
+            ready_cmd.address = req.address;
 
-            out = cmd_output_type{ready_cmd, it};
+            if (b.active_request.has_value()) {
+                continue;
+            }
+
+            //command creation state machine stays the same
+            if (b.state.open_row.has_value()) {
+                if (b.state.open_row.value() == address_mapper.row(req.address)) {
+                    if (write_mode && current_time >= b.state.write_ok) {
+                        ready_cmd.type = DRAM_COMMAND::TYPE::WRITE;
+                    } else if (!write_mode && current_time >= b.state.read_ok) {
+                        ready_cmd.type = DRAM_COMMAND::TYPE::READ;
+                    }
+                } else if (!banks_with_row_hits[b_idx] && current_time >= b.state.pre_ok) {
+                    ready_cmd.type = DRAM_COMMAND::TYPE::PRECHARGE;
+                }
+            } else if (current_time >= b.state.act_ok && faw.size() < 4) {
+                ready_cmd.type = DRAM_COMMAND::TYPE::ACTIVATE;
+            }
+
+            //new logic to take candidate
+            bool take_curr = false;
+            if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID && out.first.type == DRAM_COMMAND::TYPE::INVALID) {
+                take_curr = true;
+            } else if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID) {
+                auto& best = out.second->value();
+
+                if (write_mode) {
+                    //priority for writes determined by pscore, then batch age, then earliest
+                    take_curr = (req.priority_score < best.priority_score)
+                                || (req.priority_score == best.priority_score && req.batch_id < best.batch_id)
+                                || (req.priority_score == best.priority_score && req.batch_id == best.batch_id && req.ready_time < best.ready_time);
+                } else {
+                    //priority for reads is just earliest still
+                    take_curr = (req.ready_time < best.ready_time);
+                }
+            }
+
+            if (take_curr) {
+                if (ready_cmd.type == DRAM_COMMAND::TYPE::READ || ready_cmd.type == DRAM_COMMAND::TYPE::WRITE) {
+                    ready_cmd.autopre = do_autopre(ready_cmd);
+                }
+
+                out = cmd_output_type{ready_cmd, it};
+            }
         }
     }
-
-
-
 
     //below is all same as original
 
