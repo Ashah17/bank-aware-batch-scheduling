@@ -69,19 +69,28 @@ void DRAM_CHANNEL::update_scoreboard_decrement(size_t bank_idx, size_t bank_grou
         global_scoreboard.bank_group_counters[bank_group_idx]--;
 }
 
-uint32_t DRAM_CHANNEL::calc_priority_score(const request_type& req)
-{
-    const size_t bankgroup = address_mapper.bankgroup(req.address);
-    const size_t bank = address_mapper.bank_idx(req.address);
+uint32_t DRAM_CHANNEL::calc_priority_score(const request_type& req) {
 
-    const uint32_t curr_bankgroup_busy = global_scoreboard.bank_group_counters[bankgroup];
-    const uint32_t curr_bank_busy = global_scoreboard.bank_counters[bank];
-    const uint32_t bank_queue_depth = static_cast<uint32_t>(barbs_write_queue[bank].size());
+    //key is to calc priority score based on previously scheduled bankgroup
+    //priority score = latencies 
 
-    constexpr uint32_t bank_conflict_weight = 24;
-    constexpr uint32_t bankgroup_conflict_weight = 6;
-    constexpr uint32_t queue_depth_weight = 1;
-    return bank_conflict_weight*curr_bank_busy + bankgroup_conflict_weight*curr_bankgroup_busy + queue_depth_weight*bank_queue_depth;
+    size_t bg = address_mapper.bankgroup(req.address);
+    size_t b_idx = address_mapper.bank_idx(req.address);
+    size_t row = address_mapper.row(req.address);
+
+    uint32_t priority_score = 1; //1x latency for dif bankgroup
+
+    if (bg == last_scheduled_bankgroup) {
+        priority_score = 6; //same bankgroup
+
+        if (b_idx == last_scheduled_bank && banks[b_idx].state.open_row != row) {
+            priority_score = 24; //same bank AND row buffer conflict
+        }
+
+        //if row buffer hit then stays 6
+    }
+
+    return priority_score; 
 }
 
 void DRAM_CHANNEL::rebuild_barbs_write_queue()
@@ -103,45 +112,64 @@ void DRAM_CHANNEL::rebuild_barbs_write_queue()
     }
 }
 
+
 DRAM_CHANNEL::cmd_output_type
 DRAM_CHANNEL::find_ready_request()
 {
     cmd_output_type out;
 
-    // First check active buffer for any issuable commands:
-    for (const auto& b : banks)
-    {
-        if (!b.active_request.has_value())
-            continue;
+    //changing active buffer check to use priority scores
+    for (const auto& b : banks) {
 
-        // Check if the request is issuable:
+        if (!b.active_request.has_value()) {
+            continue;
+        }
+
         auto& [is_read, req_it] = b.active_request.value();
-        if ((is_read && current_time >= b.state.read_ok) || (!is_read && current_time >= b.state.write_ok))
-        {
-            DRAM_COMMAND::TYPE cmd_type = is_read ? DRAM_COMMAND::TYPE::READ : DRAM_COMMAND::TYPE::WRITE;
+
+        if ((is_read && current_time >= b.state.read_ok) || (!is_read && current_time >= b.state.write_ok)) {
+            //same code to create command
+            DRAM_COMMAND::TYPE cmd_type = is_ready ? DRAM_COMMAND::TYPE::READY : DRAM_COMMAND::TYPE::WRITE;
             DRAM_COMMAND ready_cmd{req_it->value().address, cmd_type};
             ready_cmd.autopre = do_autopre(ready_cmd);
 
-            if (out.first.type == DRAM_COMMAND::TYPE::INVALID
-                || (out.second->value().ready_time > req_it->value().ready_time))
-            {
+            //now new logic to take from active buffer based on priority
+
+            bool take_curr = false;
+            if (out.first.type == DRAM_COMMAND::TYPE::INVALID) {
+                take_curr = true;
+            } else if (write_mode) {
+                uint32_t curr_score = calc_priority_score(req_it->value());
+                uint32_t best_score = calc_priority_score(out.second->value());
+
+                //take if better priority or tied n earlier
+                take_curr = (curr_score < best_score) || 
+                                (curr_score == best_score && req_it->value().ready_time < out.second->value().ready_time);
+            } else {
+                //for reads just regular logic to take earliest
+                take_curr = (req_it->value().ready_time < out.second->value().ready_time);
+            }
+
+            if (take_curr) {
                 out = cmd_output_type{ready_cmd, req_it};
             }
         }
     }
 
-    if (out.first.type != DRAM_COMMAND::TYPE::INVALID)
-        return out;
+    //removed the premature return if we set the command alr above
+    //not sure if it matters if we keep anymore cuz we alr use priority above
 
-    // If nothing could be done, schedule reads and writes:
+    // if (out.first.type != DRAM_COMMAND::TYPE::INVALID) {
+    //     return out;
+    // }
+
     auto& q = write_mode ? WQ : RQ;
-    if (write_mode)
-    {
+    if (write_mode) {
         rebuild_barbs_write_queue();
-        for (auto& e : WQ)
-        {
-            if (e.has_value() && !e->scheduled)
+        for (auto& e : WQ) {
+            if (e.has_value() && !e->scheduled) {
                 e->priority_score = calc_priority_score(e.value());
+            }
         }
     }
 
@@ -211,8 +239,8 @@ DRAM_CHANNEL::find_ready_request()
             if (write_mode)
             {
                 take_candidate = (req.priority_score < best.priority_score)
-                                 || (req.priority_score == best.priority_score && req.batch_id < best.batch_id)
-                                 || (req.priority_score == best.priority_score && req.batch_id == best.batch_id && req.ready_time < best.ready_time);
+                     || (req.priority_score == best.priority_score && req.batch_id < best.batch_id)
+                     || (req.priority_score == best.priority_score && req.batch_id == best.batch_id && req.ready_time < best.ready_time);
             }
             else
             {
@@ -228,6 +256,11 @@ DRAM_CHANNEL::find_ready_request()
             out = cmd_output_type{ready_cmd, it};
         }
     }
+
+
+
+
+    //below is all same as original
 
     // we failed to schedule a command that advances an request
     if (out.first.type == DRAM_COMMAND::TYPE::INVALID)
@@ -264,7 +297,9 @@ DRAM_CHANNEL::find_ready_request()
     }
 
     return out;
+
 }
+
 
 long
 DRAM_CHANNEL::schedule_ready_request()
