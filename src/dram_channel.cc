@@ -118,6 +118,11 @@ DRAM_CHANNEL::find_ready_request()
 {
     cmd_output_type out;
 
+    //moving this up here rn
+    if (write_mode) {
+        rebuild_barbs_write_queue();
+    }
+
     //changing active buffer check to use priority scores
     for (const auto& b : banks) {
 
@@ -142,9 +147,17 @@ DRAM_CHANNEL::find_ready_request()
                 uint32_t curr_score = calc_priority_score(req_it->value());
                 uint32_t best_score = calc_priority_score(out.second->value());
 
-                //take if better priority or tied n earlier
+                //adding the tie breaker here (bank w longest queue)
+                size_t curr_bank = address_mapper.bank_idx(req_it->value().address);
+                size_t best_bank = address_mapper.bank_idx(out.second->value().address);
+
+                size_t curr_bank_wq_len = barbs_write_queue[curr_bank].size();
+                size_t best_bank_wq_len = barbs_write_queue[best_bank].size();
+
+                //take if better priority or tied n longer wq or else all tied then earlier
                 take_curr = (curr_score < best_score) || 
-                                (curr_score == best_score && req_it->value().ready_time < out.second->value().ready_time);
+                                (curr_score == best_score && curr_bank_wq_len > best_bank_wq_len) ||
+                                (curr_score == best_score && curr_bank_wq_len == best_bank_wq_len && req_it->value().ready_time < out.second->value().ready_time);
             } else {
                 //for reads just regular logic to take earliest
                 take_curr = (req_it->value().ready_time < out.second->value().ready_time);
@@ -165,7 +178,6 @@ DRAM_CHANNEL::find_ready_request()
 
     auto& q = write_mode ? WQ : RQ;
     if (write_mode) {
-        rebuild_barbs_write_queue();
         for (auto& e : WQ) {
             if (e.has_value() && !e->scheduled) {
                 e->priority_score = calc_priority_score(e.value());
@@ -236,11 +248,22 @@ DRAM_CHANNEL::find_ready_request()
             } else if (ready_cmd.type != DRAM_COMMAND::TYPE::INVALID) {
                 auto& best = out.second->value();
 
+                //adding tiebreaker here too
+
+                size_t curr_bank = address_mapper.bank_idx(req.address);
+                size_t best_bank = address_mapper.bank_idx(out.second->value().address);
+
+                size_t curr_bank_wq_len = barbs_write_queue[curr_bank].size();
+                size_t best_bank_wq_len = barbs_write_queue[best_bank].size();
+
                 if (write_mode) {
                     //priority for writes determined by pscore, then batch age, then earliest
+                    //removed batch age for now (if it chill can get rid of attr), doing the wq len 
+                    //we shud btatch by age n then do pscore maybe??
+
                     take_curr = (req.priority_score < best.priority_score)
-                                || (req.priority_score == best.priority_score && req.batch_id < best.batch_id)
-                                || (req.priority_score == best.priority_score && req.batch_id == best.batch_id && req.ready_time < best.ready_time);
+                                || (req.priority_score == best.priority_score && curr_bank_wq_len > best_bank_wq_len)
+                                || (req.priority_score == best.priority_score && curr_bank_wq_len == best_bank_wq_len && req.ready_time < best.ready_time);
                 } else {
                     //priority for reads is just earliest still
                     take_curr = (req.ready_time < best.ready_time);
